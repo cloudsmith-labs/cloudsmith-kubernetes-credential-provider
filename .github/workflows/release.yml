@@ -32,6 +32,8 @@ jobs:
           cache: true
 
       - name: Run GoReleaser
-        run: mise run release
+        run: |
+          git restore --source=HEAD -- mise.lock
+          goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
