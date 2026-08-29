@@ -1,287 +1,213 @@
-⚠️ Alpha Release Notice
-
-This project is in very early development and should be considered Alpha software. Expect significant changes, incomplete features, and potential breaking changes between releases.
-
 # Cloudsmith Kubernetes Credential Provider
 
-This credential provider enables Kubernetes to automatically authenticate with Cloudsmith registries using OIDC service account tokens. It implements the [Kubelet Credential Provider](https://kubernetes.io/docs/tasks/kubelet-credential-provider/kubelet-credential-provider/) interface, following [KEP-4412](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/4412-projected-service-account-tokens-for-kubelet-image-credential-providers/README.md) for supporting service account token authentication for image pulls.
+> [!IMPORTANT]
+> **Beta:** This project tracks the maturity of
+> [KEP-4412](https://kep.k8s.io/4412). Service account token support for kubelet
+> image credential providers graduated to beta in Kubernetes 1.34 and remains
+> beta in Kubernetes 1.37. This project will transition to stable when KEP-4412
+> does.
 
-## Features
+This exec credential provider exchanges a pod-bound Kubernetes service account
+token for short-lived Cloudsmith registry credentials. It implements the
+`credentialprovider.kubelet.k8s.io/v1` protocol and avoids storing long-lived
+image pull secrets in a cluster.
 
-- **Service Account Token Authentication**: Uses ephemeral Kubernetes service account tokens instead of long-lived static credentials
-- **Dynamic Configuration**: Supports pod-level identity for image pulls with configurable service account annotations
-- **Automatic Token Refresh**: Handles token lifecycle and caching automatically
-- **Registry Pattern Matching**: Flexible image matching patterns for Cloudsmith registries
-- **Security-First Design**: Eliminates the need for storing static secrets in the cluster
+## Requirements
 
-## How It Works
+- Kubernetes 1.34 or later
+- A Cloudsmith OIDC service configured to trust the cluster's service account
+  issuer
+- The provider binary installed on every node
+- Kubelet access to the configured service account token audience
 
-The credential provider works by:
+`KubeletServiceAccountTokenForCredentialProviders` is enabled by default from
+Kubernetes 1.34. Operators can still disable it, so verify the feature gate if
+kubelet does not invoke the provider.
 
-1. **Token Generation**: Kubelet generates a service account token bound to the specific pod requesting image pull
-2. **Plugin Invocation**: Kubelet calls the credential provider with the token and service account annotations
-3. **Authentication Exchange**: Plugin exchanges the service account token with Cloudsmith for registry credentials
-4. **Image Pull**: Kubelet uses the returned credentials to authenticate with the Cloudsmith registry
+## How it works
 
----
+1. Kubelet requests a pod-bound service account token for the configured
+   audience.
+2. Kubelet invokes this binary and sends a
+   `CredentialProviderRequest` through stdin.
+3. The provider exchanges the token with Cloudsmith.
+4. The provider returns short-lived registry credentials through stdout.
 
-# Hands-on Walkthrough: Running with Minikube
+The example config uses `cacheType: Token`, the conservative beta caching mode.
+The provider derives Cloudsmith credentials from the input token and limits
+their cache duration to the returned token's lifetime.
 
-**Learning Objectives**:
-- Understand KEP-4412 service account token authentication
-- Configure kubelet credential providers
-- Set up OIDC token validation
-- Test token-based image pulls
+## Provider configuration
 
-## Prerequisites Check
+Configure the provider with environment variables in the kubelet credential
+provider config:
 
-**Kubernetes 1.33 is required** for service account token authentication support.
-
-**Verify everything is installed:**
-
-**Open a third terminal and run:**
-
-```bash
-cd /tmp/k8s-example
-```
-
-```bash
-docker --version
-minikube version
-kubectl version --client
-python3 --version
-ngrok --version
-jq --version
-```
-
-**If ANY command fails, install that tool before continuing.**
-
----
-
-## Setup Steps
-
-### Step 1: Set Up Workspace
-
-```bash
-mkdir -p /tmp/k8s-example
-```
-
-### Step 2: Start Web Server (Terminal 1)
-
-**Open a new terminal and run:**
-
-```bash
-cd /tmp/k8s-example
-mkdir -p openid-metadata
-cd openid-metadata
-python3 -m http.server 8000
-```
-
-**Keep this terminal open - leave the server running.**
-
-### Step 3: Start ngrok (Terminal 2)
-
-**Open another new terminal and run:**
-
-```bash
-ngrok http 8000
-```
-
-**Keep this terminal open.**
-
-### Step 4: Create Configuration Files (Terminal 3)
-
-```bash
-mkdir -p /tmp/k8s-example
-```
-
-```bash
-cat > node-credential-providers.yaml << 'EOF'
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: node-credential-providers
-rules:
-- apiGroups: [""]
-  resources: ["serviceaccounts"]
-  verbs: ["get", "list"]
-- verbs: ["request-serviceaccounts-token-audience"]
-  apiGroups: [""]
-  resources: ["*"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: node-serviceaccount-wide-access-binding
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: node-credential-providers
-subjects:
-- apiGroup: rbac.authorization.k8s.io
-  kind: User
-  name: system:node:minikube
-EOF
-```
-
-```bash
-cat > credential-provider-config.yaml << 'EOF'
+```yaml
 apiVersion: kubelet.config.k8s.io/v1
 kind: CredentialProviderConfig
 providers:
   - name: cloudsmith-kubernetes-credential-provider
     matchImages:
       - "docker.cloudsmith.io"
-    defaultCacheDuration: "1h"
+    defaultCacheDuration: 1h
     apiVersion: credentialprovider.kubelet.k8s.io/v1
     env:
-      # These are cluster-wide defaults - can be overridden per service account
-      # Remove these lines if you want to force per-service-account configuration
-      - name: CLOUDSMITH_SERVICE_SLUG
-        value: default-v9ty
       - name: CLOUDSMITH_ORG_SLUG
-        value: iduffy-demo
+        value: example-org
+      - name: CLOUDSMITH_SERVICE_SLUG
+        value: example-service
     tokenAttributes:
-      serviceAccountTokenAudience: "cloudsmith"
+      serviceAccountTokenAudience: cloudsmith
+      cacheType: Token
       requireServiceAccount: true
       optionalServiceAccountAnnotationKeys:
-        - "cloudsmith.io/service-slug"
-        - "cloudsmith.io/org-slug"
-EOF
+        - cloudsmith.io/org-slug
+        - cloudsmith.io/service-slug
 ```
 
-### Step 5: Start Minikube
+The `cacheType` field is required from Kubernetes 1.34. Omitting it is an
+alpha-to-beta breaking configuration change and prevents kubelet from starting.
 
-```bash
-export NGROK_URL=$(curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+### Settings
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `CLOUDSMITH_API_HOST` | `api.cloudsmith.io` | Cloudsmith API host, optionally including a port |
+| `CLOUDSMITH_ORG_SLUG` | | Default Cloudsmith organization slug |
+| `CLOUDSMITH_SERVICE_SLUG` | | Default Cloudsmith OIDC service slug |
+| `CLOUDSMITH_LOG_LEVEL` | `info` | `debug`, `info`, `warning`, or `error` |
+| `CLOUDSMITH_HTTP_TIMEOUT` | `30s` | Cloudsmith request timeout |
+| `CLOUDSMITH_MAX_RETRY_ATTEMPTS` | `3` | Attempts for HTTP 429 and 5xx responses |
+| `CLOUDSMITH_INSECURE_SKIP_VERIFY` | `false` | Disable TLS verification; development only |
+
+You can also supply all settings in a YAML file and pass it with `--config`.
+Set additional HTTP headers in that file:
+
+```yaml
+headers:
+  X-Example-Header: value
 ```
 
-```bash
-minikube start \
-  --kubernetes-version=v1.33.0 \
-  --extra-config=kubelet.feature-gates="KubeletServiceAccountTokenForCredentialProviders=true" \
-  --extra-config=kubelet.image-credential-provider-config="/etc/kubernetes/credential-provider-config.yaml" \
-  --extra-config=kubelet.image-credential-provider-bin-dir="/usr/local/bin" \
-  --extra-config=apiserver.service-account-issuer="$NGROK_URL"
+You can also set a header with a `CLOUDSMITH_HEADER_*` environment variable.
+For example, `CLOUDSMITH_HEADER_X_EXAMPLE_HEADER=value` sets `X-Example-Header`.
+
+The `cloudsmith.io/org-slug` and `cloudsmith.io/service-slug` service account
+annotations override their defaults for one request. The API host is deliberately
+not annotation-configurable because service account owners must not be able to
+redirect projected tokens to another host.
+
+## Kubelet audience authorization
+
+When `ServiceAccountNodeAudienceRestriction` is enabled, authorize nodes to
+request the `cloudsmith` audience:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudsmith-credential-provider-audience
+rules:
+  - apiGroups: [""]
+    resources: ["cloudsmith"]
+    verbs: ["request-serviceaccounts-token-audience"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudsmith-credential-provider-audience
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cloudsmith-credential-provider-audience
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:nodes
 ```
 
-### Step 6: Install the Plugin
+Use `resourceNames` in the role to restrict access to specific service accounts
+when your cluster's authorization policy requires tighter scope.
 
-Download the latest plugin from "https://github.com/cloudsmith-io/cloudsmith-kubernetes-credential-provider/releases" and extract it into `/tmp/k8s-example`
+## Install
+
+Download an archive for the node architecture from this repository's
+[releases](https://github.com/cloudsmith-labs/cloudsmith-kubernetes-credential-provider/releases),
+verify it with `checksums.txt`, and place the binary in the directory configured
+by `--image-credential-provider-bin-dir`.
 
 ```bash
-cd /tmp/k8s-example
-
-# Copy the downloaded plugin to minikube
-minikube cp "./cloudsmith-kubernetes-credential-provider" /usr/local/bin/cloudsmith-kubernetes-credential-provider
+sudo install -o root -g root -m 0755 \
+  cloudsmith-kubernetes-credential-provider \
+  /usr/local/bin/cloudsmith-kubernetes-credential-provider
 ```
 
-```bash
-minikube ssh "sudo chmod 755 /usr/local/bin/cloudsmith-kubernetes-credential-provider"
+Start kubelet with:
+
+```text
+--image-credential-provider-config=/etc/kubernetes/credential-provider-config.yaml
+--image-credential-provider-bin-dir=/usr/local/bin
 ```
 
-### Step 8: Configure Kubernetes
+## Service account example
 
-```bash
-cd /tmp/k8s-example
-```
-
-```bash
-minikube cp credential-provider-config.yaml /etc/kubernetes/
-```
-
-```bash
-kubectl apply -f node-credential-providers.yaml
-```
-
-### Step 9: Set Up OIDC Metadata
-
-```bash
-cd openid-metadata
-mkdir -p .well-known
-```
-
-```bash
-kubectl get --raw /.well-known/openid-configuration > .well-known/openid-configuration
-kubectl get --raw /openid/v1/jwks > jwks.json
-```
-
-```bash
-export NGROK_URL=$(curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-```
-
-```bash
-jq --arg jwks_url "$NGROK_URL/jwks.json" '.jwks_uri = $jwks_url' .well-known/openid-configuration > temp.json && mv temp.json .well-known/openid-configuration
-```
-
-### Step 10: Configure OIDC on Cloudsmith
-
-Configure your OIDC on cloudsmith as you see fit using the $NGROK_URL as your provider URL.
-
-### Step 11: Test the Setup
-
-```bash
-cd /tmp/k8s-example
-```
-
-```bash
-cat > test-pod.yaml << 'EOF'
+```yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: my-service-account
+  name: cloudsmith-puller
+  namespace: default
   annotations:
-    # This overrides the cluster-wide default CLOUDSMITH_SERVICE_SLUG
-    "cloudsmith.io/service-slug": "purple-team-sa"
+    cloudsmith.io/org-slug: example-org
+    cloudsmith.io/service-slug: example-service
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: ubuntu-pod
+  name: private-image
+  namespace: default
 spec:
-  serviceAccountName: my-service-account
+  serviceAccountName: cloudsmith-puller
   containers:
-  - name: ubuntu-container
-    image: docker.cloudsmith.io/iduffy-demo/purple-team/ubuntu:latest
-    imagePullPolicy: Always
-    command: ["sleep"]
-    args: ["infinity"]
-EOF
+    - name: app
+      image: docker.cloudsmith.io/example-org/example-repo/app:latest
 ```
+
+## Development
+
+Install the pinned Go, Node.js, pnpm, pre-commit, golangci-lint, GoReleaser,
+and zizmor versions with [mise](https://mise.jdx.dev/):
 
 ```bash
-kubectl apply -f test-pod.yaml
+mise install
+mise run ci
 ```
+
+Run the complete package rather than the individual `main.go` file:
 
 ```bash
-kubectl get pods
+mise exec -- go run . version
+mise exec -- go run . < request.json
 ```
 
-```bash
-kubectl describe pod ubuntu-pod
-```
+Install the release automation dependencies with
+`mise run pnpm-install`. CI providers only need to install mise and invoke
+`mise run ci`; the GitHub workflows use the same individual tasks for parallel
+job reporting.
 
-**Look for events showing the credential provider was called and image pull attempted.**
+CI renders zizmor findings as GitHub workflow annotations and fails the job
+when findings are present. It does not require GitHub Advanced Security, SARIF
+uploads, or `security-events` permissions.
 
-### Step 12: Cleanup
+## Protocol status
 
-```bash
-kubectl delete -f test-pod.yaml
-minikube stop && minikube delete
-```
+The provider is aligned with Kubernetes 1.37:
 
-**In Terminal 1 (web server): Press Ctrl+C**
-**In Terminal 2 (ngrok): Press Ctrl+C**
+- KEP-4412 stage: beta
+- Service account token feature: beta since Kubernetes 1.34
+- Exec request and response API: `credentialprovider.kubelet.k8s.io/v1`
+- Required kubelet beta config: `tokenAttributes.cacheType`
+- Selected cache type: `Token`
 
-```bash
-rm -rf /tmp/k8s-example
-```
-
----
-
-## What You Accomplished
-
-- Set up a local Kubernetes environment with Minikube
-- Configured KEP-4412 service account token authentication
-- Set up OIDC token validation with ngrok
-- Tested pod-level authentication for image pulls
+See the [Kubernetes configuration guide](https://kubernetes.io/docs/tasks/administer-cluster/kubelet-credential-provider/)
+and [KEP metadata](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/4412-projected-service-account-tokens-for-kubelet-image-credential-providers/kep.yaml)
+for the authoritative current status.

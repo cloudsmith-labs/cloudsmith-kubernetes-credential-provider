@@ -5,24 +5,35 @@ on:
     branches:
       - master
 
+permissions: {}
+
+concurrency:
+  group: tag-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   tag:
+    name: Tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Set up tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm install -g semantic-release @semantic-release/git @semantic-release/github
+          version: 2026.8.14
+          install_args: node pnpm
+          cache: true
 
       - name: Create tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: mise run release-tag

@@ -1,0 +1,9 @@
+rules:
+  cache-poisoning:
+    ignore:
+      - release.yml
+      - tag.yml
+  undocumented-permissions:
+    ignore:
+      - release.yml
+      - tag.yml
