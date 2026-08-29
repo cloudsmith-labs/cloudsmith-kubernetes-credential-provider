@@ -6,7 +6,9 @@
 *.dylib
 main
 cloudsmith-credential-provider*
+kubernetes-credential-provider
 dist/
+node_modules/
 
 # Test binary, built with `go test -c`
 *.test

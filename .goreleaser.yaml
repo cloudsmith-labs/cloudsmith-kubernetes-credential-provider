@@ -19,7 +19,8 @@ builds:
     binary: cloudsmith-kubernetes-credential-provider
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -27,7 +28,8 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 changelog:
   sort: asc
@@ -44,4 +46,4 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
-version: 1
+version: 2

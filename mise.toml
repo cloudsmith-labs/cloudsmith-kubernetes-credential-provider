@@ -1,0 +1,72 @@
+[tool_alias]
+zizmor = "github:zizmorcore/zizmor"
+
+[tools]
+go = "1.26.7"
+node = "24.20.0"
+pnpm = "11.24.0"
+golangci-lint = "2.13.2"
+goreleaser = "2.18.0"
+zizmor = "1.29.0"
+pre-commit = "4.6.2"
+
+[tasks.format]
+description = "Format Go source files"
+run = '''
+#!/usr/bin/env sh
+if [ "$#" -eq 0 ]; then
+  set -- ./*.go
+fi
+gofmt -w "$@"
+'''
+
+[tasks.test]
+description = "Run tests with the race detector"
+run = "go test -race ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.build]
+description = "Build all Go packages"
+run = "go build ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.actions-security]
+description = "Audit automation with zizmor"
+run = "zizmor --offline --strict-collection --persona=pedantic --format=github ."
+
+[tasks.ci]
+description = "Run the complete portable CI suite"
+depends = ["test", "vet", "build", "lint", "actions-security"]
+
+[tasks.pre-commit]
+description = "Run all repository pre-commit hooks"
+run = "pre-commit run --all-files"
+
+[tasks.release-check]
+description = "Validate the GoReleaser configuration"
+run = "goreleaser check"
+
+[tasks.release]
+description = "Publish a release with GoReleaser"
+run = "goreleaser release --clean"
+
+[tasks.pnpm-install]
+description = "Install locked release automation dependencies"
+env = {
+  NPM_CONFIG_GLOBALCONFIG = "/dev/null",
+  NPM_CONFIG_USERCONFIG = "/dev/null",
+  PNPM_CONFIG_GLOBALCONFIG = "/dev/null",
+  PNPM_CONFIG_USERCONFIG = "/dev/null",
+}
+run = "pnpm install --frozen-lockfile"
+
+[tasks.release-tag]
+description = "Create the next semantic-release tag"
+depends = ["pnpm-install"]
+run = "pnpm exec semantic-release"
